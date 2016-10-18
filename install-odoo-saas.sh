@@ -12,7 +12,9 @@
  export INIT_START_SCRIPTS=${INIT_START_SCRIPTS:-"no"} # yes | no | docker-host
  export INIT_SAAS_TOOLS=${INIT_SAAS_TOOLS:-"no"} # no | list of parameters to saas.py script
  export INIT_ODOO_CONFIG=${INIT_ODOO_CONFIG:-"no"} # no | yes | docker-container
- export INIT_DIRS=${INIT_DIRS:-"yes"}
+ export INIT_USER=${INIT_USER:-"no"}
+ export INIT_DIRS=${INIT_DIRS:-"no"}
+ export GIT_PULL=${GIT_PULL:-"no"}
  export UPDATE_ADDONS_PATH=${UPDATE_ADDONS_PATH:-"no"}
  export CLEAN=${CLEAN:-"no"}
 
@@ -87,13 +89,11 @@
 
  #### DOWNLOADS...
 
- apt-get update
-
- if [[ "$INIT_NGINX" == "yes" ]] || [[ "$INIT_START_SCRIPTS" != "no" ]]
+ if [[ "$INIT_NGINX" == "yes" ]] || [[ "$INIT_START_SCRIPTS" != "no" ]] || [[ "$INIT_ODOO_CONFIG" != "no" ]]
  then
      apt-get install -y emacs23-nox || apt-get install -y emacs24-nox
      # moreutils is installed for sponge util
-     apt-get install -y moreutils tree
+     apt-get install -y moreutils
  fi
 
  [[ "$SYSTEM" == "supervisor" ]] && [[ "$INIT_START_SCRIPTS" != "no" ]] && apt-get install -y supervisor
@@ -111,6 +111,8 @@
              python-support
 
      ## wkhtmltopdf
+     WKHTMLTOPDF_INSTALLED="no"
+     whereis wkhtmltopdf | grep -q 'wkhtmltopdf: /' && export WKHTMLTOPDF_INSTALLED='yes'
      if [[ "$WKHTMLTOPDF_DEB_URL" == "" ]] || [[ "$WKHTMLTOPDF_DEPENDENCIES" == "" ]]
      then
          WK_DEPS="xfonts-base xfonts-75dpi libjpeg62-turbo"
@@ -140,20 +142,15 @@
          fi
 
      fi
-     curl -o wkhtmltox.deb -SL ${WKHTMLTOPDF_DEB_URL}
-     dpkg --force-depends -i wkhtmltox.deb
-     apt-get install -y ${WKHTMLTOPDF_DEPENDENCIES} || true
-     apt-get -y install -f --no-install-recommends
-     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false -o APT::AutoRemove::SuggestsImportant=false npm
-     rm -rf /var/lib/apt/lists/* wkhtmltox.deb
-
-     # install dependencies and delete odoo deb package:
-     #curl -o odoo.deb -SL http://nightly.odoo.com/9.0/nightly/deb/odoo_9.0.latest_all.deb
-     #dpkg --force-depends -i odoo.deb
-     #apt-get update
-     #apt-get -y install -f --no-install-recommends
-     #rm -rf /var/lib/apt/lists/* odoo.deb
-     #apt-get purge -y odoo
+     if [[ "$WKHTMLTOPDF_INSTALLED" == "no" ]]
+     then
+         curl -o wkhtmltox.deb -SL ${WKHTMLTOPDF_DEB_URL}
+         dpkg --force-depends -i wkhtmltox.deb
+         apt-get install -y ${WKHTMLTOPDF_DEPENDENCIES} || true
+         apt-get -y install -f --no-install-recommends
+         apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false -o APT::AutoRemove::SuggestsImportant=false npm
+         rm -rf /var/lib/apt/lists/* wkhtmltox.deb
+     fi
 
      apt-get install -y adduser node-less node-clean-css postgresql-client python python-dateutil python-decorator python-docutils python-feedparser python-imaging python-jinja2 python-ldap python-libxslt1 python-lxml python-mako python-mock python-openid python-passlib python-psutil python-psycopg2 python-pybabel python-pychart python-pydot python-pyparsing python-pypdf python-reportlab python-requests python-suds python-tz python-vatnumber python-vobject python-werkzeug python-xlwt python-yaml
      apt-get install -y python-gevent python-simplejson
@@ -165,7 +162,7 @@
      #pip install -r requirements.txt
 
      # fix error with jpeg (if you get it)
-     apt-get install python-dev build-essential libxml2-dev libxslt1-dev
+     apt-get install -y python-dev build-essential libxml2-dev libxslt1-dev
      # uninstall PIL
      pip uninstall PIL || echo "PIL is not installed"
      if [[ "$OS_RELEASE" == "jessie" ]]
@@ -194,7 +191,7 @@
 
      ### Deps for Odoo Saas Tool
      # TODO replace it with deb packages
-     apt-get install libffi-dev
+     apt-get install -y libffi-dev libssl-dev
      pip install Boto
      pip install FileChunkIO
      pip install pysftp
@@ -209,16 +206,39 @@
      POSTGRES_PACKAGES="postgresql postgresql-contrib"
      apt-get install $POSTGRES_PACKAGES -y || \
          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
+         apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 7FCC7D46ACCC4CF8 && \
          echo 'deb http://apt.postgresql.org/pub/repos/apt/ trusty-pgdg main' >> /etc/apt/sources.list.d/pgdg.list && \
          apt-get update && \
          apt-get install $POSTGRES_PACKAGES -y
  fi
 
+ if [[ "$INIT_USER" == "yes" ]]
+ then
+     ### Odoo System User
+     adduser --system --quiet --shell=/bin/bash --home=/opt/${ODOO_USER} --group ${ODOO_USER} || echo 'cannot adduser'
+
+ fi
+
+ if [[ "$INIT_DIRS" == "yes" ]]
+ then
+     ### Odoo logs
+     mkdir -p /var/log/odoo/
+     chown ${ODOO_USER}:${ODOO_USER} /var/log/odoo
+
+     ## /temp import data
+     mkdir -p /opt/${ODOO_USER}/.local/share/User/import/
+     chown -R ${ODOO_USER}:${ODOO_USER} /opt/${ODOO_USER}/.local
+
+ fi
+
  ### Odoo Souce Code
  if [[ "$CLONE_ODOO" == "yes" ]]
  then
+     apt-get install -y git
+
      mkdir -p $ODOO_SOURCE_DIR
-     git clone -b ${ODOO_BRANCH} https://github.com/odoo/odoo.git $ODOO_SOURCE_DIR
+     git clone --depth=1 -b ${ODOO_BRANCH} https://github.com/odoo/odoo.git $ODOO_SOURCE_DIR
+     chown -R ${ODOO_USER}:${ODOO_USER} $ODOO_SOURCE_DIR
 
      #### Changes on Odoo Code
      cd $ODOO_SOURCE_DIR
@@ -259,19 +279,20 @@
      REPOS=( "${REPOS[@]}" "https://github.com/it-projects-llc/pos-addons.git it-projects-llc/pos-addons")
      REPOS=( "${REPOS[@]}" "https://github.com/it-projects-llc/access-addons.git it-projects-llc/access-addons")
      REPOS=( "${REPOS[@]}" "https://github.com/it-projects-llc/website-addons.git it-projects-llc/website-addons")
-     REPOS=( "${REPOS[@]}" "https://github.com/it-projects-llc/misc-addons.git it-projects-llc/addons-it-projects-llc")
+     REPOS=( "${REPOS[@]}" "https://github.com/it-projects-llc/misc-addons.git it-projects-llc/misc-addons")
      REPOS=( "${REPOS[@]}" "https://github.com/it-projects-llc/odoo-saas-tools.git it-projects-llc/odoo-saas-tools")
  fi
 
  if [[ "${REPOS}" != "" ]]
  then
-     apt-get install git
+     apt-get install -y git
  fi
 
  for r in "${REPOS[@]}"
  do
-     eval "git clone -b ${ODOO_BRANCH} $r" || echo "Cannot clone: git clone -b ${ODOO_BRANCH} $r"
+     eval "git clone --depth=1 -b ${ODOO_BRANCH} $r" || echo "Cannot clone: git clone -b ${ODOO_BRANCH} $r"
  done
+ chown -R ${ODOO_USER}:${ODOO_USER} $ADDONS_DIR
 
 
  #from http://stackoverflow.com/questions/2914220/bash-templating-how-to-build-configuration-files-from-templates-with-bash
@@ -283,31 +304,13 @@
     su - postgres bash -c "psql -c \"CREATE USER ${ODOO_USER} WITH CREATEDB PASSWORD '${DB_PASS}';\""
  fi
 
- if [[ "$INIT_DIRS" == "yes" ]]
- then
-
-     ### Odoo System User
-     adduser --system --quiet --shell=/bin/bash --home=/opt/${ODOO_USER} --gecos '$OE_USER' --group ${ODOO_USER} || echo 'cannot adduser'
-
-     ### Odoo Config
-     mkdir -p /var/log/odoo/
-     chown ${ODOO_USER}:${ODOO_USER} /var/log/odoo
-
-     ## /temp import data
-     mkdir -p /opt/${ODOO_USER}/.local/share/User/import/
-     chown -R ${ODOO_USER}:${ODOO_USER} /opt/${ODOO_USER}/.local
-
- fi
-
  if [[ "$INIT_ODOO_CONFIG" != "no" ]]
  then
      cd $INSTALL_ODOO_DIR
-     CONFIGS="./configs"
-     if [[ "$INIT_ODOO_CONFIG" == "docker-container" ]]
+     if [[ "$INIT_ODOO_CONFIG" != "docker-container" ]]
      then
-         CONFIGS="./configs-docker-container"
+         cp ./configs/odoo-server.conf $OPENERP_SERVER
      fi
-     cp ${CONFIGS}/odoo-server.conf $OPENERP_SERVER
      eval "${PERL_UPDATE_ENV} < $OPENERP_SERVER" | sponge $OPENERP_SERVER
      chown ${ODOO_USER}:${ODOO_USER} $OPENERP_SERVER
      chmod 600 $OPENERP_SERVER
@@ -328,6 +331,16 @@
      ADDONS_PATH=`echo $ODOO_SOURCE_DIR/openerp/addons,$ODOO_SOURCE_DIR/addons,$ADDONS_PATH | sed "s,//,/,g" | sed "s,/,\\\\\/,g" `
      sed -ibak "s/addons_path.*/addons_path = $ADDONS_PATH/" $OPENERP_SERVER
 
+ fi
+
+ if [[ "$GIT_PULL" == "yes" ]]
+ then
+     git -C $ODOO_SOURCE_DIR pull
+
+     for repo in `ls -d1 $ADDONS_DIR/*/*`
+     do
+         git -C $repo pull
+     done
  fi
 
 
